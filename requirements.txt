@@ -1,0 +1,16 @@
+torch
+transformers
+datasets
+tokenizers
+accelerate
+trl
+peft
+
+numpy
+pandas
+scikit-learn
+matplotlib
+tqdm
+
+jupyter
+wandb

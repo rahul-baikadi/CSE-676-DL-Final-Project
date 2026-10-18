@@ -1,0 +1,20 @@
+#Hugging face cache
+.cache/
+huggingface/
+hf_cache/
+
+# Experiment outputs
+results/
+logs/
+runs/
+wandb/
+
+# Temporary files
+tmp/
+temp/
+*.log
+
+# Packaging
+build/
+dist/
+*.egg-info/
