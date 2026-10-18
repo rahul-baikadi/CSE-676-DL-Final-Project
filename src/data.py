@@ -1,3 +1,4 @@
+#some new changes made on 10/17
 import torch
 
 from torch.utils.data import Dataset, DataLoader
@@ -14,7 +15,8 @@ class LanguageModelDataset(Dataset):
         return len(self.texts)
 
     def __getitem__(self, idx):
-        text = self.texts[idx]
+        # Add an end-of-text token so the model learns where a story ends.
+        text = self.texts[idx] + self.tokenizer.tokenizer.eos_token
 
         encoded = self.tokenizer.tokenizer(
             text,
@@ -25,10 +27,17 @@ class LanguageModelDataset(Dataset):
         )
 
         tokens = encoded["input_ids"].squeeze(0)
+        # 1 for real tokens (including the end-of-text token), 0 for padding.
+        attention_mask = encoded["attention_mask"].squeeze(0)
 
         # Shift by one token for next-token prediction.
         input_ids = tokens[:-1]
-        labels = tokens[1:]
+        labels = tokens[1:].clone()
+
+        # The pad token is the same as the end-of-text token, so we use the
+        # attention mask to find padding. Label it -100 so cross-entropy
+        # (ignore_index=-100 by default) skips it in the loss.
+        labels[attention_mask[1:] == 0] = -100
 
         return {
             "input_ids": input_ids,
