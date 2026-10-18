@@ -40,7 +40,9 @@ class CausalSelfAttention(nn.Module):
         scores = scores.masked_fill(~self.mask[:, :, :T, :T], float("-inf"))
 
         weights = F.softmax(scores, dim=-1)
+        self.last_attn_weights = weights.detach()   # (B, n_heads, T, T), saved for inspection
         weights = self.attn_dropout(weights)
+
 
         out = weights @ v                                  # (B, n_heads, T, d_head)
         out = out.transpose(1, 2).contiguous().view(B, T, C)  # merge heads
