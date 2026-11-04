@@ -1,88 +1,92 @@
-#some new changes made on 10/17
-import torch
+import re
 
+import torch
 from torch.utils.data import Dataset, DataLoader
 from datasets import load_dataset
 
+def load_keyword_story_pairs(
+    split="train",
+    num_samples=None,
+    dataset_name="roneneldan/TinyStoriesInstruct",
+):
+    
+    ds = load_dataset(dataset_name, split=split, streaming=True)
 
-class LanguageModelDataset(Dataset):
-    def __init__(self, texts, tokenizer, max_length=128):
-        self.texts = texts
-        self.tokenizer = tokenizer
+    pairs, buffer = [], []
+    for row in ds:
+        buffer.append(row["text"])
+        joined = "\n".join(buffer)
+        if "<|endoftext|>" not in joined:
+            continue
+
+        chunks = joined.split("<|endoftext|>")
+        buffer = [chunks[-1]]                 # keep the unfinished remainder
+        for chunk in chunks[:-1]:
+            pair = _parse_instruct_entry(chunk)
+            if pair is not None:
+                pairs.append(pair)
+                if num_samples is not None and len(pairs) >= num_samples:
+                    return pairs
+    return pairs
+
+
+def _parse_instruct_entry(chunk):
+    words_match = re.search(r"^Words:\s*(.+)$", chunk, flags=re.MULTILINE)
+    story_match = re.search(r"^Story:\s*(.*)", chunk, flags=re.MULTILINE | re.DOTALL)
+    if not words_match or not story_match:
+        return None   # some entries have no Words field; skip them
+
+    words = [w.strip() for w in words_match.group(1).split(",") if w.strip()]
+    story = story_match.group(1).strip()
+    if not words or not story:
+        return None
+    return words, story
+
+
+class KeywordStoryDataset(Dataset):
+
+    def __init__(self, pairs, tokenizer, max_src_len=32, max_length=128):
+        self.pairs = pairs
+        self.tok = tokenizer.tokenizer
+        self.eos = self.tok.eos_token_id
+        self.pad = tokenizer.pad_token_id
+        self.max_src_len = max_src_len
         self.max_length = max_length
 
     def __len__(self):
-        return len(self.texts)
+        return len(self.pairs)
+
+    def _pad(self, ids, length, value):
+        return ids + [value] * (length - len(ids))
 
     def __getitem__(self, idx):
-        # Add an end-of-text token so the model learns where a story ends.
-        text = self.texts[idx] + self.tokenizer.tokenizer.eos_token
+        words, story = self.pairs[idx]
 
-        encoded = self.tokenizer.tokenizer(
-            text,
-            truncation=True,
-            padding="max_length",
-            max_length=self.max_length + 1,
-            return_tensors="pt",
-        )
+        # ---- encoder side ----
+        src = self.tok.encode(", ".join(words))[: self.max_src_len]
+        src_mask = [1] * len(src)
 
-        tokens = encoded["input_ids"].squeeze(0)
-        # 1 for real tokens (including the end-of-text token), 0 for padding.
-        attention_mask = encoded["attention_mask"].squeeze(0)
+        # ---- decoder side ----
+        # [eos] story [eos], truncated. If the story is too long, the final eos
+        # is cut off, so the model is never taught to stop at the truncation point.
+        seq = [self.eos] + self.tok.encode(story) + [self.eos]
+        seq = seq[: self.max_length + 1]
 
-        # Shift by one token for next-token prediction.
-        input_ids = tokens[:-1]
-        labels = tokens[1:].clone()
+        tgt_input = seq[:-1]
+        labels = seq[1:]
+        tgt_mask = [1] * len(tgt_input)
 
-        # The pad token is the same as the end-of-text token, so we use the
-        # attention mask to find padding. Label it -100 so cross-entropy
-        # (ignore_index=-100 by default) skips it in the loss.
-        labels[attention_mask[1:] == 0] = -100
-
+        T, S = self.max_length, self.max_src_len
         return {
-            "input_ids": input_ids,
-            "labels": labels,
+            "src_ids":   torch.tensor(self._pad(src, S, self.pad)),
+            "src_mask":  torch.tensor(self._pad(src_mask, S, 0)),
+            "tgt_input": torch.tensor(self._pad(tgt_input, T, self.pad)),
+            "tgt_mask":  torch.tensor(self._pad(tgt_mask, T, 0)),
+            "labels":    torch.tensor(self._pad(labels, T, -100)),
         }
 
 
-def load_text_dataset(
-    dataset_name,
-    config_name=None,
-    text_column="text",
-    split="train",
-    num_samples=None,
-):
-    dataset = load_dataset(dataset_name, config_name, split=split)
-
-    if num_samples is not None:
-        dataset = dataset.select(
-            range(min(num_samples, len(dataset)))
-        )
-
-    texts = [
-        example[text_column]
-        for example in dataset
-        if example[text_column].strip()
-    ]
-
-    return texts
-
-
-def create_dataloader(
-    texts,
-    tokenizer,
-    batch_size=32,
-    max_length=128,
-    shuffle=True,
-):
-    dataset = LanguageModelDataset(
-        texts=texts,
-        tokenizer=tokenizer,
-        max_length=max_length,
-    )
-
-    return DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=shuffle,
-    )
+def create_keyword_dataloader(pairs, tokenizer, batch_size=32,
+                              max_src_len=32, max_length=128, shuffle=True):
+    dataset = KeywordStoryDataset(pairs, tokenizer, max_src_len, max_length)
+    return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle)
