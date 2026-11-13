@@ -4,89 +4,96 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 from datasets import load_dataset
 
-def load_keyword_story_pairs(
-    split="train",
-    num_samples=None,
-    dataset_name="roneneldan/TinyStoriesInstruct",
-):
-    
-    ds = load_dataset(dataset_name, split=split, streaming=True)
+_FIELD = r"^(?:Features|Words|Summary|Random sentence|Story):"
 
-    pairs, buffer = [], []
+
+def _pad(ids, length, value):
+    return ids + [value] * (length - len(ids))
+
+
+# ---------- plain language-model data ----------
+class LanguageModelDataset(Dataset):
+    def __init__(self, texts, tokenizer, max_length=128):
+        self.texts, self.tok, self.max_length = texts, tokenizer.tokenizer, max_length
+
+    def __len__(self):
+        return len(self.texts)
+
+    def __getitem__(self, idx):
+        ids = (self.tok.encode(self.texts[idx]) + [self.tok.eos_token_id])[: self.max_length + 1]
+        return {
+            "input_ids": torch.tensor(_pad(ids[:-1], self.max_length, self.tok.pad_token_id)),
+            "labels": torch.tensor(_pad(ids[1:], self.max_length, -100)),
+        }
+
+
+def load_text_dataset(dataset_name, config_name=None, text_column="text",
+                      split="train", num_samples=None):
+    ds = load_dataset(dataset_name, config_name, split=split)
+    if num_samples is not None:
+        ds = ds.select(range(min(num_samples, len(ds))))
+    return [t for t in ds[text_column] if t.strip()]
+
+
+def create_dataloader(texts, tokenizer, batch_size=32, max_length=128, shuffle=True):
+    return DataLoader(LanguageModelDataset(texts, tokenizer, max_length),
+                      batch_size=batch_size, shuffle=shuffle)
+
+
+# ---------- keyword -> story pairs ----------
+def _parse_entry(chunk):
+    words = re.search(r"^Words:\s*(.+)$", chunk, re.M)
+    story = re.search(r"^Story:\s*(.*?)(?=" + _FIELD + r"|\Z)", chunk, re.M | re.S)
+    if not (words and story and story.group(1).strip()):
+        return None
+    return [w.strip() for w in words.group(1).split(",") if w.strip()], story.group(1).strip()
+
+
+def load_keyword_story_pairs(split="train", num_samples=None,
+                             dataset_name="roneneldan/TinyStoriesInstruct"):
+    pairs, buffer = [], ""
+    # parquet revision avoids a Windows UnicodeDecodeError in the raw .txt files
+    ds = load_dataset(dataset_name, revision="refs/convert/parquet", split=split, streaming=True)
     for row in ds:
-        buffer.append(row["text"])
-        joined = "\n".join(buffer)
-        if "<|endoftext|>" not in joined:
+        buffer += row["text"] + "\n"
+        if "<|endoftext|>" not in buffer:
             continue
-
-        chunks = joined.split("<|endoftext|>")
-        buffer = [chunks[-1]]                 # keep the unfinished remainder
-        for chunk in chunks[:-1]:
-            pair = _parse_instruct_entry(chunk)
-            if pair is not None:
+        *chunks, buffer = buffer.split("<|endoftext|>")
+        for chunk in chunks:
+            pair = _parse_entry(chunk)
+            if pair:
                 pairs.append(pair)
                 if num_samples is not None and len(pairs) >= num_samples:
                     return pairs
     return pairs
 
 
-def _parse_instruct_entry(chunk):
-    words_match = re.search(r"^Words:\s*(.+)$", chunk, flags=re.MULTILINE)
-    story_match = re.search(r"^Story:\s*(.*)", chunk, flags=re.MULTILINE | re.DOTALL)
-    if not words_match or not story_match:
-        return None   # some entries have no Words field; skip them
-
-    words = [w.strip() for w in words_match.group(1).split(",") if w.strip()]
-    story = story_match.group(1).strip()
-    if not words or not story:
-        return None
-    return words, story
-
-
 class KeywordStoryDataset(Dataset):
-
     def __init__(self, pairs, tokenizer, max_src_len=32, max_length=128):
-        self.pairs = pairs
-        self.tok = tokenizer.tokenizer
-        self.eos = self.tok.eos_token_id
-        self.pad = tokenizer.pad_token_id
-        self.max_src_len = max_src_len
-        self.max_length = max_length
+        self.pairs, self.tok = pairs, tokenizer.tokenizer
+        self.max_src_len, self.max_length = max_src_len, max_length
 
     def __len__(self):
         return len(self.pairs)
 
-    def _pad(self, ids, length, value):
-        return ids + [value] * (length - len(ids))
-
     def __getitem__(self, idx):
         words, story = self.pairs[idx]
+        eos, pad, S, T = self.tok.eos_token_id, self.tok.pad_token_id, self.max_src_len, self.max_length
 
-        # ---- encoder side ----
-        src = self.tok.encode(", ".join(words))[: self.max_src_len]
-        src_mask = [1] * len(src)
+        src = self.tok.encode(", ".join(words))[:S]
+        seq = ([eos] + self.tok.encode(story) + [eos])[: T + 1]
+        tgt, labels = seq[:-1], seq[1:]
 
-        # ---- decoder side ----
-        # [eos] story [eos], truncated. If the story is too long, the final eos
-        # is cut off, so the model is never taught to stop at the truncation point.
-        seq = [self.eos] + self.tok.encode(story) + [self.eos]
-        seq = seq[: self.max_length + 1]
-
-        tgt_input = seq[:-1]
-        labels = seq[1:]
-        tgt_mask = [1] * len(tgt_input)
-
-        T, S = self.max_length, self.max_src_len
         return {
-            "src_ids":   torch.tensor(self._pad(src, S, self.pad)),
-            "src_mask":  torch.tensor(self._pad(src_mask, S, 0)),
-            "tgt_input": torch.tensor(self._pad(tgt_input, T, self.pad)),
-            "tgt_mask":  torch.tensor(self._pad(tgt_mask, T, 0)),
-            "labels":    torch.tensor(self._pad(labels, T, -100)),
+            "src_ids": torch.tensor(_pad(src, S, pad)),
+            "src_mask": torch.tensor(_pad([1] * len(src), S, 0)),
+            "tgt_input": torch.tensor(_pad(tgt, T, pad)),
+            "tgt_mask": torch.tensor(_pad([1] * len(tgt), T, 0)),
+            "labels": torch.tensor(_pad(labels, T, -100)),
         }
 
 
 def create_keyword_dataloader(pairs, tokenizer, batch_size=32,
                               max_src_len=32, max_length=128, shuffle=True):
-    dataset = KeywordStoryDataset(pairs, tokenizer, max_src_len, max_length)
-    return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle)
+    return DataLoader(KeywordStoryDataset(pairs, tokenizer, max_src_len, max_length),
+                      batch_size=batch_size, shuffle=shuffle)
