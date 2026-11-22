@@ -13,7 +13,7 @@ required words are used naturally (not just listed)? Answer with a single letter
 
 
 class PairwiseJudge:
-    def __init__(self, model_name="meta-llama/Llama-3.1-8B-Instruct",
+    def __init__(self, model_name="Qwen/Qwen2.5-7B-Instruct",
                  load_4bit=True, batch_size=8, margin=0.1):
         self.tok, self.model = load_llm(model_name, load_4bit)
         self.model_name = model_name

@@ -15,7 +15,7 @@ class Seq2SeqTransformer(nn.Module):
         n_enc_layers=2,
         n_dec_layers=2,
         max_src_len=32,
-        max_tgt_len=128,
+        max_tgt_len=256,
         dropout=0.1,
     ):
         super().__init__()
@@ -81,7 +81,7 @@ class Seq2SeqTransformer(nn.Module):
 
     # ---------------- generation (Sec. 4.6) ----------------
     @torch.no_grad()
-    def generate(self, src_ids, src_mask, eos_id, max_new_tokens=120,
+    def generate(self, src_ids, src_mask, eos_id, max_new_tokens=255,
                  temperature=1.0, top_k=50):
         self.eval()
         B = src_ids.size(0)

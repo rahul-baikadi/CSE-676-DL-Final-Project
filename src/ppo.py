@@ -6,7 +6,7 @@ import time
 import torch
 import torch.nn as nn
 
-from src.data import KeywordStoryDataset
+from src.data import KeywordStoryDataset, filter_complete
 from src.rewards import get_reward, keyword_score
 from src.tokenizer import TextTokenizer
 from src.utils import get_device, load_checkpoint, load_pairs, save_checkpoint, set_seed
@@ -16,13 +16,13 @@ def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--init", default="checkpoints/pretrain/best.pt")
     p.add_argument("--reward", choices=["rule", "llm"], default="rule")
-    p.add_argument("--reward_model", default="Qwen/Qwen2.5-3B-Instruct")
+    p.add_argument("--reward_model", default="microsoft/Phi-3.5-mini-instruct")
     p.add_argument("--prompt_samples", type=int, default=20_000)
     p.add_argument("--steps", type=int, default=300)
     p.add_argument("--rollout_size", type=int, default=64)
     p.add_argument("--minibatch_size", type=int, default=16)
     p.add_argument("--ppo_epochs", type=int, default=4)
-    p.add_argument("--max_new_tokens", type=int, default=120)
+    p.add_argument("--max_new_tokens", type=int, default=255)
     p.add_argument("--lr", type=float, default=1e-5)
     p.add_argument("--beta", type=float, default=0.05)
     p.add_argument("--clip", type=float, default=0.2)
@@ -150,7 +150,7 @@ def main():
     reward_kwargs = {"model_name": args.reward_model} if args.reward == "llm" else {}
     reward_fn = get_reward(args.reward, **reward_kwargs)
 
-    pairs = load_pairs("train", args.prompt_samples)
+    pairs = filter_complete(load_pairs("train", args.prompt_samples), tok, config["max_tgt_len"])
     ds = KeywordStoryDataset(pairs, tok, config["max_src_len"], config["max_tgt_len"])
     optimizer = torch.optim.AdamW(list(policy.parameters()) + list(value_head.parameters()),
                                   lr=args.lr, weight_decay=0.0)
@@ -166,7 +166,7 @@ def main():
             print(f"  {sample_words} -> {sample[:250]!r}")
         if step % args.save_every == 0 or step == args.steps:
             save_checkpoint(f"{out}/policy.pt", policy, config, step=step, reward=args.reward,
-                            beta=args.beta, value_head=value_head.state_dict())
+                            beta=args.beta, seed=args.seed, value_head=value_head.state_dict())
 
 
 if __name__ == "__main__":

@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from src.data import load_keyword_story_pairs
+from src.data import filter_complete, load_keyword_story_pairs
 from src.model import Seq2SeqTransformer
 
 
@@ -33,6 +33,15 @@ def load_pairs(split, num_samples, cache_dir="data_cache"):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(pairs), encoding="utf-8")
     return pairs
+
+
+def load_test_pairs(tok, max_tgt_len, test_samples, val_samples=2000, test_pool=2000):
+    """Held-out prompts: validation entries after the ones used to select the checkpoint."""
+    pool = load_pairs("validation", val_samples + test_pool)[val_samples:]
+    pairs = filter_complete(pool, tok, max_tgt_len)
+    if len(pairs) < test_samples:
+        raise ValueError(f"only {len(pairs)} complete test stories, need {test_samples}")
+    return pairs[:test_samples]
 
 
 def save_checkpoint(path, model, config, **extra):

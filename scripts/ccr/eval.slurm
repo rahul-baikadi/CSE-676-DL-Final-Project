@@ -6,22 +6,23 @@
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=48G
-#SBATCH --time=04:00:00
+#SBATCH --time=12:00:00
 #SBATCH --output=slurm_logs/%x-%j.out
+set -e
 source scripts/ccr/config.sh
 eval "$ENV_ACTIVATE"
 export HF_HUB_OFFLINE=1 HF_DATASETS_OFFLINE=1
 cd "$PROJ_DIR"
-
-JUDGE=""
-[ -d "$HF_HOME/hub/models--meta-llama--Llama-3.1-8B-Instruct" ] && JUDGE="--judge"
+python -c "import torch; assert torch.cuda.is_available(), 'GPU not visible to PyTorch'" || exit 1
 
 # First checkpoint = baseline (SFT); best-of-N is computed from it.
-python -m src.evaluate \
-  --checkpoints sft=checkpoints/pretrain/best.pt \
-                ppo_rule_b0=checkpoints/ppo_rule_b0/policy.pt \
-                ppo_rule_b005=checkpoints/ppo_rule_b005/policy.pt \
-                ppo_rule_b02=checkpoints/ppo_rule_b02/policy.pt \
-                ppo_llm_b005=checkpoints/ppo_llm_b005/policy.pt \
-  --best_of 4 16 --test_samples 500 --mauve $JUDGE --out results
+CKPTS=(sft=checkpoints/pretrain/best.pt)
+for run in ppo_rule_b0 ppo_rule_b005 ppo_rule_b02 ppo_llm_b005; do
+  for seed in 1 2 3; do
+    CKPTS+=("${run}_s${seed}=checkpoints/${run}_s${seed}/policy.pt")
+  done
+done
+
+python -m src.evaluate --checkpoints "${CKPTS[@]}" \
+  --best_of 4 16 --best_of_rewards rule llm --test_samples 500 --mauve --judge --out results
 python scripts/plot_results.py results/metrics.json results/

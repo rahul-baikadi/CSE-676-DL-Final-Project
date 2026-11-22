@@ -68,8 +68,14 @@ def load_keyword_story_pairs(split="train", num_samples=None,
     return pairs
 
 
+def filter_complete(pairs, tokenizer, max_length=256):
+    """Keep stories that fit with both EOS tokens and can be generated within the length cap."""
+    tok = tokenizer.tokenizer
+    return [p for p in pairs if len(tok.encode(p[1])) + 2 <= max_length]
+
+
 class KeywordStoryDataset(Dataset):
-    def __init__(self, pairs, tokenizer, max_src_len=32, max_length=128):
+    def __init__(self, pairs, tokenizer, max_src_len=32, max_length=256):
         self.pairs, self.tok = pairs, tokenizer.tokenizer
         self.max_src_len, self.max_length = max_src_len, max_length
 
@@ -94,6 +100,6 @@ class KeywordStoryDataset(Dataset):
 
 
 def create_keyword_dataloader(pairs, tokenizer, batch_size=32,
-                              max_src_len=32, max_length=128, shuffle=True):
+                              max_src_len=32, max_length=256, shuffle=True):
     return DataLoader(KeywordStoryDataset(pairs, tokenizer, max_src_len, max_length),
                       batch_size=batch_size, shuffle=shuffle)

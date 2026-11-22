@@ -17,7 +17,10 @@ def load_llm(name, load_4bit=True):
 @torch.no_grad()
 def choice_probs(tok, model, prompts, choices, batch_size=16):
     """Renormalized probability of each single-token answer. Returns (N, len(choices))."""
-    choice_ids = [tok.encode(c, add_special_tokens=False)[0] for c in choices]
+    # Last token: Llama-style tokenizers put a shared blank token before digits.
+    choice_ids = [tok.encode(c, add_special_tokens=False)[-1] for c in choices]
+    if len(set(choice_ids)) != len(choices):
+        raise ValueError(f"answer choices {choices} do not map to distinct tokens: {choice_ids}")
     out = []
     for i in range(0, len(prompts), batch_size):
         texts = [

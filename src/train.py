@@ -4,7 +4,7 @@ import time
 
 import torch
 
-from src.data import create_keyword_dataloader
+from src.data import create_keyword_dataloader, filter_complete
 from src.model import Seq2SeqTransformer
 from src.tokenizer import TextTokenizer
 from src.utils import get_device, load_pairs, save_checkpoint, set_seed, to_device
@@ -28,7 +28,7 @@ def parse_args():
     p.add_argument("--n_enc_layers", type=int, default=2)
     p.add_argument("--n_dec_layers", type=int, default=2)
     p.add_argument("--max_src_len", type=int, default=32)
-    p.add_argument("--max_tgt_len", type=int, default=128)
+    p.add_argument("--max_tgt_len", type=int, default=256)
     p.add_argument("--dropout", type=float, default=0.1)
     p.add_argument("--out", default="checkpoints/pretrain")
     p.add_argument("--device", default="auto")
@@ -78,8 +78,8 @@ def main():
     device = get_device(args.device)
     tok = TextTokenizer()
 
-    train_pairs = load_pairs("train", args.train_samples)
-    val_pairs = load_pairs("validation", args.val_samples)
+    train_pairs = filter_complete(load_pairs("train", args.train_samples), tok, args.max_tgt_len)
+    val_pairs = filter_complete(load_pairs("validation", args.val_samples), tok, args.max_tgt_len)
     loader_kw = dict(max_src_len=args.max_src_len, max_length=args.max_tgt_len)
     train_loader = create_keyword_dataloader(train_pairs, tok, args.batch_size, shuffle=True, **loader_kw)
     val_loader = create_keyword_dataloader(val_pairs, tok, args.batch_size, shuffle=False, **loader_kw)
