@@ -5,6 +5,9 @@ tokenizers
 accelerate
 trl
 peft
+nltk
+bitsandbytes
+mauve-text
 
 numpy
 pandas
