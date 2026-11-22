@@ -20,3 +20,8 @@ dist/
 *.egg-info/
 __pycache__/
 *.pyc
+
+# Checkpoints and cached data
+checkpoints/
+data_cache/
+slurm_logs/
