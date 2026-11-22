@@ -33,6 +33,8 @@ def parse_args():
     p.add_argument("--out", default="results")
     p.add_argument("--device", default="auto")
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--best_of", type=int, nargs="*", default=[],
+                   help="best-of-N baselines for the FIRST checkpoint, e.g. --best_of 4 16")
     return p.parse_args()
 
 
@@ -61,7 +63,40 @@ def generate_all(model, loader, tok, args, device, shuffle_src=False):
 
 
 @torch.no_grad()
+def generate_best_of_n(model, loader, pairs, tok, args, device, n, reward_fn):
+    """Sample n stories per prompt and keep the one with the highest rule reward.
+    Same reward PPO optimizes, so this is the inference-time-compute baseline."""
+    stories, finished = [], []
+    eos = tok.tokenizer.eos_token_id
+    offset = 0
+    for batch in loader:
+        src_ids, src_mask = batch["src_ids"].to(device), batch["src_mask"].to(device)
+        B = src_ids.size(0)
+        words = [pairs[offset + i][0] for i in range(B)]
+        offset += B
+        out = model.generate(src_ids.repeat_interleave(n, 0), src_mask.repeat_interleave(n, 0), eos,
+                             max_new_tokens=args.max_new_tokens,
+                             temperature=args.temperature, top_k=args.top_k)
+        cands, fins = [], []
+        for row in out:
+            hit = (row == eos).nonzero()
+            end = hit[0].item() if len(hit) else len(row)
+            cands.append(tok.decode(row[:end]))
+            fins.append(bool(len(hit)))
+        rep_words = [w for w in words for _ in range(n)]
+        best = reward_fn(rep_words, cands, fins).view(B, n).argmax(1)
+        for i in range(B):
+            j = i * n + best[i].item()
+            stories.append(cands[j])
+            finished.append(fins[j])
+    return stories, finished
+
+
+@torch.no_grad()
 def external_ppl(stories, name, device, batch_size=16):
+    stories = [s for s in stories if s.strip()]   # empty generations break batching
+    if not stories:
+        return float("nan")
     tok = AutoTokenizer.from_pretrained(name)
     tok.pad_token = tok.eos_token
     lm = AutoModelForCausalLM.from_pretrained(name).to(device).eval()
@@ -134,6 +169,25 @@ def main():
         results[name] = m
         all_stories[name] = stories
         print(name, json.dumps({k: round(v, 4) for k, v in m.items()}))
+
+        if spec == args.checkpoints[0] and args.best_of:
+            from src.rewards.rule import RuleReward
+            reward_fn = RuleReward()
+            for n in args.best_of:
+                bo_name = f"{name}_bo{n}"
+                set_seed(args.seed)
+                bo_stories, bo_fin = generate_best_of_n(model, loader, pairs, tok, args, device, n, reward_fn)
+                bm = story_metrics(pairs, bo_stories, bo_fin)
+                bm["ext_ppl"] = external_ppl(bo_stories, args.ppl_model, device)
+                bm["samples_per_prompt"] = n
+                if args.mauve:
+                    import mauve
+                    bm["mauve"] = mauve.compute_mauve(p_text=refs, q_text=bo_stories,
+                                                      device_id=0 if device.type == "cuda" else -1,
+                                                      verbose=False).mauve
+                results[bo_name] = bm
+                all_stories[bo_name] = bo_stories
+                print(bo_name, json.dumps({k: round(v, 4) for k, v in bm.items()}))
         del model
 
     if args.judge and len(all_stories) > 1:
